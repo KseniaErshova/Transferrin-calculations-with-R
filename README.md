@@ -1,4 +1,4 @@
 # Transferrin-calculations-with-R
 
 Here is DOI:
-https://zenodo.org/badge/latestdoi/105325198
+https://doi.org/10.5281/zenodo.999668
