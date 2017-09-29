@@ -1,0 +1,235 @@
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(reshape2)
+library(gridExtra)
+library (plyr)
+library(ggthemes)
+library(scales)
+library(svglite)
+
+# Export data
+
+setwd("~/path_to_raw_files")
+path = "~/path_to_raw_files"
+out.file<-""
+file.names <- dir(path, pattern =".txt")
+for(i in 1:length(file.names)){
+  file <- read.table(file.names[i], skip = 8)
+  out.file <- rbind(out.file, file)
+}
+out.file <- as.data.frame(sapply(out.file, as.numeric))
+out.file = out.file[-1,]
+rownames(out.file) = NULL
+
+# Calculate mean for technical replicas (Depending on plate layout)
+A = as.data.frame(matrix(0, ncol = 12, nrow = 0))
+b = numeric()
+j = c(2,5,10,13,18,21,26,29,34,37,42,45,50,53)
+for (i in j){
+  q = out.file[i:(i+2),]
+  b = apply(q, 2, mean)     
+  A = rbind(A,b)
+}
+
+# Define baseline = Fneg (Depending on plate layout)
+c = numeric()
+l <- j[seq(1, length(j), 2)]
+for (i in l){
+  a = mean(out.file[(i+2):(i+3),1])
+  c = c(c, a)
+}
+
+# Define Fpos (Depending on plate layout)
+t0_1 = mean(out.file[2:3, 1]) - c[1]
+t0_1 = rep(t0_1, each=11)
+
+t0_2 = mean(out.file[6:7, 1]) - c[1]
+t0_2 = rep(t0_2, each=11)
+
+# Separate data by two experiments
+exp1 = A[seq(1, nrow(A), by = 2), ]
+exp2 = A[seq(2, nrow(A)+1, by = 2), ]
+
+# Subtract baseline from each column = F - Fneg
+corr_1 = apply(exp1,2,'-', c)
+corr_2 = apply(exp2,2,'-', c)
+corr_1[corr_1 < 0] <- 1
+corr_2[corr_2 < 0] <- 1
+
+# change row "time 0" and remove control
+corr_1 = as.data.frame(rbind(t0_1,corr_1[-1,-1]))
+corr_2 = as.data.frame(rbind(t0_2, corr_2[-1,-1]))
+
+# Add time points
+a = c(0,1,2,4,6,8,24)
+corr_1 = cbind(a, corr_1)
+corr_2 = cbind(a, corr_2)
+corr_1 = round(corr_1,1)
+corr_2 = round(corr_2,1)
+
+#Add colnames
+Plate_names = c("Time", "0_Cipro", "1/3MIC_trf+Cipro", 
+                "1MIC_trf+Cipro", "3MIC_trf+Cipro",
+                "0_Mero", "1/3MIC_trf+Mero",
+                "1MIC_trf+Mero", "3MIC_trf+Mero",
+                "1/3MIC_trf", "1MIC_trf", "3MIC_trf")
+colnames(corr_1) = Plate_names
+colnames(corr_2) = Plate_names
+
+# Write summary tables
+
+write.table(corr_1, file = "Result_corrected_1.txt", sep="\t", row.names=FALSE, quote=FALSE)
+write.table(corr_2, file = "Result_corrected_2.txt", sep="\t", row.names=FALSE, quote=FALSE)
+
+# Second piece of code 
+
+# Export data of all experiments to the data frame
+
+Plate_names = c("Time", "0_Cipro", "1/3MIC_trf+Cipro", 
+                "1MIC_trf+Cipro", "3MIC_trf+Cipro",
+                "0_Mero", "1/3MIC_trf+Mero",
+                "1MIC_trf+Mero", "3MIC_trf+Mero",
+                "1/3MIC_trf", "1MIC_trf", "3MIC_trf")
+
+Exp = c(6,7,8,9) #Numbers of experiments
+
+df <- list()
+setwd("path_to_Result_corrected.txt_files") 
+for (i in Exp){
+  f = paste("Result_corrected_", i, sep="_")
+  f = paste(f,"txt", sep = ".")
+  print(f)
+  df[[i]] <- read.table(f, sep = "\t", header = FALSE, skip = 1)
+  # print(head(df))
+  colnames(df[[i]]) = Plate_names
+}
+
+# Calculate Reduction = (F-Fneg)/(Fpos-Fneg)
+df1 = list()
+for (i in Exp){
+  test = df[[i]]
+  vec = unname(as.numeric(test[1,]), force = FALSE)
+  df1[[i]] = sweep(test, 2, vec, `/`)
+}
+
+# Gather data
+for (i in Exp){
+  df1[[i]] <- gather(df1[[i]], "source", "value", 2:length(df1[[i]])) %>% 
+    separate("source", c("Dose_of_trf", "Group", "Replica"), sep= '_')
+  df1[[i]]$Replica <- i
+}
+
+df2 <- df1[[1]]
+for (i in Exp){
+  df2 <- rbind(df2, df1[[i]])
+}
+
+# Replace Time column and remove posirive control
+df2 = df2 %>% drop_na()
+c = rep(c(1,2,4,6,8,24), 44)
+df2$Time = c
+
+write.table(df2, file = "All_data_long_Microb_trfDose.txt", sep="\t", row.names=FALSE, quote=FALSE)
+
+# set up a group factors
+df2$Dose_of_trf = factor(df2$Dose_of_trf, levels = unique(df2$Dose_of_trf))
+df2$Group = factor(df2$Group, levels = unique(df2$Group))
+
+# Calculate descriptive statistics
+Stat = ddply(df2, c("Group", "Dose_of_trf", "Time"), summarise, n = length(unique(df2$Replica)), mean=mean(value),
+             sd = sd(value), median=median(value),
+             X25 = quantile(value, probs = 0.25), X75 = quantile(value, probs = 0.75),
+             min = min(value), max = max(value))
+
+# Write down summary tables
+write.table(Stat, file = "Descriptive_statistics_Microb_trfDose.txt", sep="\t", row.names=FALSE, quote=FALSE)
+pdf("Descriptive_statistics_Microb_trfDose.pdf", height=22, width=12)
+grid.table(Stat[1:11])
+dev.off()
+
+# Add column names
+Stat$name = paste(Stat$Dose_of_trf, Stat$Group, sep="_")
+
+# Make a data subset by antibiotic
+Cipro <- subset(Stat, Group=="trf" | Group=="trf+Cipro" | Group=="Cipro",
+                select=Group:name)
+Mero <- subset(Stat, Group=="trf" | Group=="trf+Mero" | Group=="Mero",
+               select=Group:name)
+
+# Plot results; Cipro
+labC = c("Cipro", "1/3 MIC trf", "1/3 MIC trf + 1/3 MIC Cipro", "1 MIC trf", 
+         "1 MIC trf + 1/3 MIC Cipro", "3 MIC trf", "3 MIC trf + 1/3 MIC Cipro")
+
+C = ggplot(Cipro, aes(x = Time, y = median, colour=name, shape = name)) +
+          geom_line(size = 1.1) +
+          geom_point(size = 4.5)
+# change axises limits and add title
+C = C + scale_x_continuous(name="Time (Hours)", limits=c(0.5, 24.3), breaks = seq(0,24, 4)) +
+        scale_y_continuous(name="Resazurin reduction", limits = c(0, 1)) +
+        ggtitle('A. baumannii AB074; 1/3x Ciprofloxacin MIC; Time-kill') +
+        theme(panel.grid.major = element_line(linetype = "dotted", colour="grey26"), 
+              panel.grid.major.x = element_blank(),
+              axis.title.x = element_text(colour="grey26",size=20),
+              axis.title.y = element_text(colour="grey26",size=20),
+              plot.title = element_text(colour="grey26", size = 22, face = "bold.italic", vjust=0.5),
+              legend.key.size = unit(1.4, "cm"),
+              legend.key = element_rect(fill = "white", colour = "white"),
+              legend.text = element_text(colour="grey26", size = 18),
+              legend.title = element_text(colour="grey26", size = 22),
+              axis.text = element_text(colour="grey26", size = 18),
+              axis.line.x = element_line(colour = "grey26", size = 0.8),
+              axis.line.y = element_line(colour = "grey26", size = 0.8),
+              panel.background = element_blank())
+C = C + scale_colour_manual(name = "Treatment Groups",
+                            labels = labC,
+                            values = c("black", "deeppink3", "skyblue3", "deeppink3", "skyblue3", 
+                                       "deeppink3", "skyblue3")) +
+        scale_shape_manual(name = "Treatment Groups",
+                            labels = labC,
+                            values = c(18, 17, 17, 19, 19, 15, 15))
+C = C + geom_errorbar(aes(ymin=X25, ymax=X75), width=0.3, size=0.6, color="midnightblue")
+C
+# Save summary chart
+ggsave("Microb_trfDose_Antibioticpdf", width=15, height=7, dpi=200)
+ggsave(file = "Microb_trfDose_Antibiotic.svg", C, width=20, height=9, dpi=400)
+
+# Plot results; Mero
+labM = c("Mero", "1/3 MIC trf", "1/3 MIC trf + 1/3 MIC Mero", "1 MIC trf", 
+         "1 MIC trf + 1/3 MIC Mero", "3 MIC trf", "3 MIC trf + 1/3 MIC Mero")
+
+M = ggplot(Mero, aes(x = Time, y = median, colour=name, shape = name)) +
+  geom_line(size = 1.1) +
+  geom_point(size = 4.5)
+# change axises limits and add title
+M = M + scale_x_continuous(name="Time (Hours)", limits=c(0.5, 24.3), breaks = seq(0,24, 4)) +
+  scale_y_continuous(name="Resazurin reduction", limits = c(0, 1)) +
+  ggtitle('A. baumannii AB074; 1/3x Meropenem MIC; Time Kill') +
+  theme(panel.grid.major = element_line(linetype = "dotted", colour="grey26"), 
+        panel.grid.major.x = element_blank(),
+        axis.title.x = element_text(colour="grey26",size=20),
+        axis.title.y = element_text(colour="grey26",size=20),
+        plot.title = element_text(colour="grey26", size = 22, face = "bold.italic", vjust=0.5),
+        legend.key.size = unit(1.4, "cm"),
+        legend.key = element_rect(fill = "white", colour = "white"),
+        legend.text = element_text(colour="grey26", size = 18),
+        legend.title = element_text(colour="grey26", size = 22),
+        axis.text = element_text(colour="grey26", size = 18),
+        axis.line.x = element_line(colour = "grey26", size = 0.8),
+        axis.line.y = element_line(colour = "grey26", size = 0.8),
+        panel.background = element_blank())
+M = M + scale_colour_manual(name = "Treatment Groups",
+                            labels = labM,
+                            values = c("black", "deeppink3", "skyblue3", "deeppink3", "skyblue3", 
+                                       "deeppink3", "skyblue3")) +
+  scale_shape_manual(name = "Treatment Groups",
+                     labels = labM,
+                     values = c(18, 17, 17, 19, 19, 15, 15))
+M = M + geom_errorbar(aes(ymin=X25, ymax=X75), width=0.3, size=0.6, color="midnightblue")
+M
+# Save summary chart
+ggsave("Microb_trfDose_Antibiotic.pdf", width=15, height=7, dpi=200)
+ggsave(file = "Microb_trfDose_Antibiotic.svg", M, width=20, height=9, dpi=400)
+
+
+
